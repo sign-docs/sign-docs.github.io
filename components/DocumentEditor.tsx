@@ -102,7 +102,6 @@ const DraggableSignature: React.FC<DraggableSignatureProps> = ({ signature, onUp
     );
 };
 
-// FIX: Define DocumentEditorProps interface
 interface DocumentEditorProps {
   pages: DocumentPage[];
   signature: Signature | null;

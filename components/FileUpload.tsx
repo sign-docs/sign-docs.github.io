@@ -1,4 +1,3 @@
-
 import React, { useCallback, useState } from 'react';
 import { UploadCloudIcon } from './icons';
 
@@ -9,7 +8,6 @@ interface FileUploadProps {
 export const FileUpload: React.FC<FileUploadProps> = ({ onFileChange }) => {
   const [isDragging, setIsDragging] = useState(false);
 
-  // FIX: Changed event type from React.DragEvent<HTMLDivElement> to React.DragEvent<HTMLLabelElement>
   const handleDrag = useCallback((e: React.DragEvent<HTMLLabelElement>) => {
     e.preventDefault();
     e.stopPropagation();
@@ -20,7 +18,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onFileChange }) => {
     }
   }, []);
 
-  // FIX: Changed event type from React.DragEvent<HTMLDivElement> to React.DragEvent<HTMLLabelElement>
   const handleDrop = useCallback((e: React.DragEvent<HTMLLabelElement>) => {
     e.preventDefault();
     e.stopPropagation();
