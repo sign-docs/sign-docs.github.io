@@ -32,6 +32,17 @@ sign-docs is a simple, secure, and free web application that allows you to sign 
 - **PDF Rendering**: [PDF.js](https://mozilla.github.io/pdf.js/) by Mozilla
 - **PDF Generation**: [jsPDF](https://github.com/parallax/jsPDF)
 
+## 🚀 Deployment to GitHub Pages
+
+This project is configured for easy deployment to GitHub Pages using GitHub Actions.
+
+1.  **Push to `main`**: Once you push your changes to the `main` branch, the deployment workflow will automatically start.
+2.  **Configure Repository**: Go to your repository's `Settings` > `Pages`.
+3.  **Set Source**: Under `Build and deployment`, change the `Source` from `Deploy from a branch` to `GitHub Actions`.
+
+After the workflow completes, your site will be live at the URL provided on the Pages settings page (e.g., `https://<your-username>.github.io/<repository-name>/`).
+
+
 ## 🔒 Our Commitment to Privacy
 
 Privacy is the core feature of sign-docs. In an age where data privacy is paramount, we've built this tool to operate entirely on the client-side.
