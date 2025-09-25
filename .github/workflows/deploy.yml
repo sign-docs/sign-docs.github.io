@@ -1,4 +1,4 @@
-name: Build and deploy to gh-pages
+name: Build and deploy built site to main
 
 on:
   push:
@@ -29,9 +29,10 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Deploy to gh-pages
+      - name: Deploy built site to main root
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          branch: gh-pages
+          branch: main
           folder: dist
+          clean: false
           token: ${{ secrets.GITHUB_TOKEN }}
