@@ -73,7 +73,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | 'base' | null>(null);
   const [mySignatureBase, setMySignatureBase] = useState<string | null>(null);
   const [mySignatureMarkers, setMySignatureMarkers] = useState<MySignatureMarker[]>([]);
-  const [myName, setMyName] = useState('Stan Chen'); // Default for primary signer
+  const [myName, setMyName] = useState(''); // Default empty for primary signer
   
   const [isDrawing, setIsDrawing] = useState(false);
   const [penWidth, setPenWidth] = useState(2.5);
