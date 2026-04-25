@@ -11,95 +11,95 @@ interface DraggableSignatureProps {
 }
 
 const DraggableSignature: React.FC<DraggableSignatureProps> = ({ signature, onUpdate, viewerBounds, pageData }) => {
-    const sigRef = useRef<HTMLDivElement>(null);
-    const [isDragging, setIsDragging] = useState(false);
-    const [dragStart, setDragStart] = useState({ x: 0, y: 0, sigX: 0, sigY: 0 });
+  const sigRef = useRef<HTMLDivElement>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0, sigX: 0, sigY: 0 });
 
-    // Calculate conversion factors
-    const viewerAspectRatio = viewerBounds.width / viewerBounds.height;
-    const pageAspectRatio = pageData.width / pageData.height;
+  // Calculate conversion factors
+  const viewerAspectRatio = viewerBounds.width / viewerBounds.height;
+  const pageAspectRatio = pageData.width / pageData.height;
 
-    let renderWidth, renderHeight;
-    if (viewerAspectRatio > pageAspectRatio) {
-        renderHeight = viewerBounds.height;
-        renderWidth = renderHeight * pageAspectRatio;
-    } else {
-        renderWidth = viewerBounds.width;
-        renderHeight = renderWidth / pageAspectRatio;
-    }
+  let renderWidth, renderHeight;
+  if (viewerAspectRatio > pageAspectRatio) {
+    renderHeight = viewerBounds.height;
+    renderWidth = renderHeight * pageAspectRatio;
+  } else {
+    renderWidth = viewerBounds.width;
+    renderHeight = renderWidth / pageAspectRatio;
+  }
 
-    const scale = renderWidth / pageData.width;
-    const offsetX = (viewerBounds.width - renderWidth) / 2;
-    const offsetY = (viewerBounds.height - renderHeight) / 2;
+  const scale = renderWidth / pageData.width;
+  const offsetX = (viewerBounds.width - renderWidth) / 2;
+  const offsetY = (viewerBounds.height - renderHeight) / 2;
 
-    // Convert PDF points to screen pixels for rendering
-    const pixelPos = {
-        x: signature.x * scale + offsetX,
-        y: signature.y * scale + offsetY,
-        width: signature.width * scale,
-        height: signature.height * scale,
+  // Convert PDF points to screen pixels for rendering
+  const pixelPos = {
+    x: signature.x * scale + offsetX,
+    y: signature.y * scale + offsetY,
+    width: signature.width * scale,
+    height: signature.height * scale,
+  };
+
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!sigRef.current || !viewerBounds) return;
+    e.preventDefault();
+    setIsDragging(true);
+    setDragStart({
+      x: e.clientX,
+      y: e.clientY,
+      sigX: pixelPos.x,
+      sigY: pixelPos.y,
+    });
+  };
+
+  const handleMouseMove = useCallback((e: MouseEvent) => {
+    if (!isDragging || !viewerBounds) return;
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+
+    let newX = dragStart.sigX + dx;
+    let newY = dragStart.sigY + dy;
+
+    // Constrain within rendered page bounds
+    newX = Math.max(offsetX, Math.min(newX, offsetX + renderWidth - pixelPos.width));
+    newY = Math.max(offsetY, Math.min(newY, offsetY + renderHeight - pixelPos.height));
+
+    const newPdfPos = {
+      x: (newX - offsetX) / scale,
+      y: (newY - offsetY) / scale,
     };
 
-    const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-        if (!sigRef.current || !viewerBounds) return;
-        e.preventDefault();
-        setIsDragging(true);
-        setDragStart({
-            x: e.clientX,
-            y: e.clientY,
-            sigX: pixelPos.x,
-            sigY: pixelPos.y,
-        });
+    onUpdate(newPdfPos);
+  }, [isDragging, dragStart, viewerBounds, onUpdate, scale, offsetX, offsetY, renderWidth, renderHeight, pixelPos.width, pixelPos.height]);
+
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
+  }, []);
+
+  useEffect(() => {
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
     };
+  }, [handleMouseMove, handleMouseUp]);
 
-    const handleMouseMove = useCallback((e: MouseEvent) => {
-        if (!isDragging || !viewerBounds) return;
-        const dx = e.clientX - dragStart.x;
-        const dy = e.clientY - dragStart.y;
-        
-        let newX = dragStart.sigX + dx;
-        let newY = dragStart.sigY + dy;
-        
-        // Constrain within rendered page bounds
-        newX = Math.max(offsetX, Math.min(newX, offsetX + renderWidth - pixelPos.width));
-        newY = Math.max(offsetY, Math.min(newY, offsetY + renderHeight - pixelPos.height));
-
-        const newPdfPos = {
-            x: (newX - offsetX) / scale,
-            y: (newY - offsetY) / scale,
-        };
-
-        onUpdate(newPdfPos);
-    }, [isDragging, dragStart, viewerBounds, onUpdate, scale, offsetX, offsetY, renderWidth, renderHeight, pixelPos.width, pixelPos.height]);
-
-    const handleMouseUp = useCallback(() => {
-        setIsDragging(false);
-    }, []);
-
-    useEffect(() => {
-        window.addEventListener('mousemove', handleMouseMove);
-        window.addEventListener('mouseup', handleMouseUp);
-        return () => {
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseup', handleMouseUp);
-        };
-    }, [handleMouseMove, handleMouseUp]);
-    
-    return (
-        <div
-            ref={sigRef}
-            onMouseDown={handleMouseDown}
-            className="absolute cursor-move border-2 border-dashed border-cyan-400/0 hover:border-cyan-400/80 transition-all duration-200"
-            style={{
-                left: `${pixelPos.x}px`,
-                top: `${pixelPos.y}px`,
-                width: `${pixelPos.width}px`,
-                height: `${pixelPos.height}px`,
-            }}
-        >
-            <img src={signature.dataUrl} alt="Signature" className="w-full h-full" draggable="false" />
-        </div>
-    );
+  return (
+    <div
+      ref={sigRef}
+      onMouseDown={handleMouseDown}
+      className="absolute cursor-move border-2 border-dashed border-red-500/50 hover:border-cyan-400/80 transition-all duration-200"
+      style={{
+        left: `${pixelPos.x}px`,
+        top: `${pixelPos.y}px`,
+        width: `${pixelPos.width}px`,
+        height: `${pixelPos.height}px`,
+      }}
+    >
+      <img src={signature.dataUrl} alt="Signature" className="w-full h-full" draggable="false" />
+    </div>
+  );
 };
 
 interface DocumentEditorProps {
@@ -130,47 +130,36 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({ pages, signature
   const handleApplySignature = (dataUrl: string) => {
     const img = new Image();
     img.onload = () => {
-        if (!viewerRef.current) return;
-        const viewerWidth = viewerRef.current.clientWidth;
-        const viewerHeight = viewerRef.current.clientHeight;
+      const currentPageData = pages[currentPage];
+      const pageWidth = currentPageData.width;
+      const pageHeight = currentPageData.height;
+      const aspectRatio = img.width / img.height;
 
-        const aspectRatio = img.width / img.height;
-        const sigWidthPx = viewerWidth / 5; // Start at 20% of viewer width
-        const sigHeightPx = sigWidthPx / aspectRatio;
+      // Default size: 20% of document width
+      const sigWidth = pageWidth / 5;
+      const sigHeight = sigWidth / aspectRatio;
 
-        const xPx = (viewerWidth - sigWidthPx) / 2;
-        const yPx = (viewerHeight - sigHeightPx) / 2;
+      // Default position: 20 units from left, 20 units from bottom
+      const x = 20;
+      const y = pageHeight - sigHeight - 20;
 
-        const currentPageData = pages[currentPage];
-        const viewerAspectRatio = viewerWidth / viewerHeight;
-        const pageAspectRatio = currentPageData.width / currentPageData.height;
+      console.log(`Applying signature: page=${pageWidth}x${pageHeight}, sig=${sigWidth}x${sigHeight}, pos=${x},${y}`);
 
-        let renderWidth, renderHeight;
-        if (viewerAspectRatio > pageAspectRatio) {
-            renderHeight = viewerHeight;
-            renderWidth = renderHeight * pageAspectRatio;
-        } else {
-            renderWidth = viewerWidth;
-            renderHeight = renderWidth / pageAspectRatio;
-        }
+      const finalX = Math.max(0, Math.min(x, pageWidth - sigWidth));
+      const finalY = Math.max(0, Math.min(y, pageHeight - sigHeight));
 
-        const scale = renderWidth / currentPageData.width;
-        
-        const offsetX = (viewerWidth - renderWidth) / 2;
-        const offsetY = (viewerHeight - renderHeight) / 2;
-
-        onSignatureChange({
-            dataUrl,
-            x: (xPx - offsetX) / scale,
-            y: (yPx - offsetY) / scale,
-            width: sigWidthPx / scale,
-            height: sigHeightPx / scale,
-            pageIndex: currentPage,
-        });
+      onSignatureChange({
+        dataUrl,
+        x: finalX,
+        y: finalY,
+        width: sigWidth,
+        height: sigHeight,
+        pageIndex: currentPage,
+      });
     }
     img.src = dataUrl;
   };
-  
+
   const currentPageData = pages[currentPage];
 
   return (
@@ -193,25 +182,25 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({ pages, signature
 
       {/* Center: Document Viewer */}
       <div className="flex-grow flex flex-col items-center justify-center gap-2">
-        <div 
-          ref={viewerRef} 
+        <div
+          ref={viewerRef}
           className="relative w-full flex-grow bg-gray-800 rounded-lg flex items-center justify-center overflow-hidden"
         >
-          <img 
-            src={currentPageData.dataUrl} 
-            alt={`Document Page ${currentPage + 1}`} 
+          <img
+            src={currentPageData.dataUrl}
+            alt={`Document Page ${currentPage + 1}`}
             className="max-w-full max-h-full object-contain"
           />
           {signature && signature.pageIndex === currentPage && viewerBounds && (
-            <DraggableSignature 
-                signature={signature}
-                onUpdate={(pos) => {
-                    if (!signature) return;
-                    onSignatureChange({ ...signature, ...pos, pageIndex: currentPage });
-                }}
-                viewerBounds={viewerBounds}
-                pageData={currentPageData}
-             />
+            <DraggableSignature
+              signature={signature}
+              onUpdate={(pos) => {
+                if (!signature) return;
+                onSignatureChange({ ...signature, ...pos, pageIndex: currentPage });
+              }}
+              viewerBounds={viewerBounds}
+              pageData={currentPageData}
+            />
           )}
         </div>
         {pages.length > 1 && (
@@ -232,26 +221,26 @@ export const DocumentEditor: React.FC<DocumentEditorProps> = ({ pages, signature
           <div className="bg-gray-700/50 rounded-md p-3 text-center">
             <p className="text-sm">Signature applied to page {signature.pageIndex + 1}.</p>
             <p className="text-xs text-gray-400">Drag to move it.</p>
-             <button
-                onClick={() => onSignatureChange(null)}
-                className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 rounded-md transition-colors duration-200"
-             >
-                <TrashIcon className="w-4 h-4" /> Remove Signature
+            <button
+              onClick={() => onSignatureChange(null)}
+              className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold bg-red-600 hover:bg-red-700 rounded-md transition-colors duration-200"
+            >
+              <TrashIcon className="w-4 h-4" /> Remove Signature
             </button>
           </div>
         )}
 
         <div className="mt-auto">
-             <p className="text-xs text-center text-gray-400 mb-2">
-                Your documents won't be stored. Please remember to download your document when this session is done.
-            </p>
-            <button
-                onClick={onDownload}
-                disabled={!signature}
-                className="w-full flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-cyan-600 hover:bg-cyan-700 rounded-md transition-colors duration-200 disabled:bg-gray-600 disabled:cursor-not-allowed"
-            >
-                <DownloadIcon /> Download as PDF
-            </button>
+          <p className="text-xs text-center text-gray-400 mb-2">
+            Your documents won't be stored. Please remember to download your document when this session is done.
+          </p>
+          <button
+            onClick={onDownload}
+            disabled={!signature}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 text-base font-semibold bg-cyan-600 hover:bg-cyan-700 rounded-md transition-colors duration-200 disabled:bg-gray-600 disabled:cursor-not-allowed"
+          >
+            <DownloadIcon /> Download as PDF
+          </button>
         </div>
       </div>
     </div>
