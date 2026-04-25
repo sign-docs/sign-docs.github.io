@@ -32,6 +32,9 @@ interface RecipientField {
   pageIndex: number;
   isSigned?: boolean;
   filledDataUrl?: string; // Image of the signature placed on this specific field
+  width?: number; // Base pixel geometry scale width
+  showBaseline?: boolean; // Toggles 'X _____Name' visibility
+  isBurned?: boolean; // Flag for imported fields that already have the baseline burned physically into the PDF
 }
 
 interface Recipient {
@@ -49,6 +52,15 @@ interface SignatureData {
   pageIndex: number;
 }
 
+interface MySignatureMarker {
+  id: string;
+  x: number;
+  y: number;
+  pageIndex: number;
+  width: number;
+  showBaseline: boolean;
+}
+
 // --- Main Component ---
 export default function App() {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -58,8 +70,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   
-  const [selectedId, setSelectedId] = useState<string | 'me' | null>(null);
-  const [mySignature, setMySignature] = useState<SignatureData | null>(null);
+  const [selectedId, setSelectedId] = useState<string | 'base' | null>(null);
+  const [mySignatureBase, setMySignatureBase] = useState<string | null>(null);
+  const [mySignatureMarkers, setMySignatureMarkers] = useState<MySignatureMarker[]>([]);
   const [myName, setMyName] = useState('Stan Chen'); // Default for primary signer
   
   const [isDrawing, setIsDrawing] = useState(false);
@@ -69,7 +82,7 @@ export default function App() {
 
   const [recipients, setRecipients] = useState<Recipient[]>([]);
   const [activeRecipientId, setActiveRecipientId] = useState<string | null>(null);
-  const [placementMode, setPlacementMode] = useState<'mine' | 'other' | null>(null);
+  const [placementMode, setPlacementMode] = useState<'mine_marker' | 'relocate_mine' | 'other' | null>(null);
 
   // --- Handlers ---
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -96,7 +109,11 @@ export default function App() {
           const keywords = pdfLibDoc.getKeywords();
           if (keywords && keywords.includes('SIGNFLOW:')) {
               const jsonPart = keywords.split('SIGNFLOW:')[1];
-              existingFields = JSON.parse(jsonPart);
+              const parsed = JSON.parse(jsonPart);
+              existingFields = parsed.map((r: any) => ({
+                 ...r,
+                 fields: r.fields.map((f: any) => ({ ...f, isBurned: true }))
+              }));
           }
       } catch (err) {
           console.warn("Metadata extraction failed or not found:", err);
@@ -115,7 +132,7 @@ export default function App() {
   };
 
   const startDrawing = (targetFieldId?: string) => {
-    setSelectedId(targetFieldId || 'me');
+    setSelectedId(targetFieldId || 'base');
     setIsDrawing(true);
     setTimeout(() => {
       if (sigCanvasRef.current) {
@@ -141,16 +158,22 @@ export default function App() {
       const croppedCanvas = getCroppedCanvas(sigCanvasRef.current);
       const dataUrl = croppedCanvas.toDataURL();
       
-      if (selectedId && selectedId !== 'me') {
-          // Fill a specific recipient field
-          setRecipients(recipients.map(r => ({
-              ...r,
-              fields: r.fields.map(f => f.id === selectedId ? { ...f, isSigned: true, filledDataUrl: dataUrl } : f)
-          })));
+      if (selectedId && selectedId !== 'base') {
+          // Auto-fill ALL fields for the recipient who owns this selected marker
+          setRecipients(recipients.map(r => {
+             const ownsSelectedField = r.fields.some(f => f.id === selectedId);
+             if (ownsSelectedField) {
+                 return {
+                     ...r,
+                     fields: r.fields.map(f => ({ ...f, isSigned: true, filledDataUrl: dataUrl }))
+                 };
+             }
+             return r;
+          }));
       } else {
-          // Create standalone signature and enter placement mode
-          setMySignature(prev => prev ? { ...prev, dataUrl } : { dataUrl, x: 0.5, y: 0.5, width: 160, pageIndex: 0 });
-          setPlacementMode('mine');
+          // Create standalone base signature and enter placement mode
+          setMySignatureBase(dataUrl);
+          setPlacementMode('mine_marker');
       }
       setIsDrawing(false);
     }
@@ -175,8 +198,13 @@ export default function App() {
     const x = (e.clientX - rect.left) / rect.width;
     const y = (e.clientY - rect.top) / rect.height;
 
-    if (placementMode === 'mine' && mySignature) {
-      setMySignature({ ...mySignature, x, y, pageIndex });
+    if (placementMode === 'mine_marker') {
+      const newMarkerId = crypto.randomUUID();
+      setMySignatureMarkers([...mySignatureMarkers, { id: newMarkerId, x, y, pageIndex, width: 140, showBaseline: true }]);
+      setSelectedId(newMarkerId);
+      setPlacementMode(null);
+    } else if (placementMode === 'relocate_mine' && selectedId) {
+      setMySignatureMarkers(mySignatureMarkers.map(m => m.id === selectedId ? { ...m, x, y, pageIndex } : m));
       setPlacementMode(null);
     } else if (placementMode === 'other' && activeRecipientId) {
       if (selectedId) {
@@ -190,7 +218,7 @@ export default function App() {
           const fieldId = crypto.randomUUID();
           setRecipients(recipients.map(r => {
             if (r.id === activeRecipientId) {
-              return { ...r, fields: [...r.fields, { id: fieldId, x, y, pageIndex }] };
+              return { ...r, fields: [...r.fields, { id: fieldId, x, y, pageIndex, width: 140, showBaseline: true }] };
             }
             return r;
           }));
@@ -207,33 +235,37 @@ export default function App() {
     const helveticaFont = await pdfLibDoc.embedFont(StandardFonts.Helvetica);
     const pages = pdfLibDoc.getPages();
     
-    // 1. Embed My Standalone Signature
-    if (mySignature) {
-      const image = await pdfLibDoc.embedPng(mySignature.dataUrl);
-      const page = pages[mySignature.pageIndex];
-      const { width, height } = page.getSize();
-      const imgWidth = mySignature.width;
-      const imgHeight = (image.height / image.width) * imgWidth;
-      
-      const sigX = mySignature.x * width;
-      const sigY = (1 - mySignature.y) * height;
-      const startX = sigX - (imgWidth / 2) + 10;
-      const endX = sigX + (imgWidth / 2) - 10;
-      const baselineY = sigY - (imgHeight / 2) + 2; // Render underline slightly above true bottom boundary
+    // 1. Embed My Standalone Signature Markers
+    if (mySignatureBase) {
+      const image = await pdfLibDoc.embedPng(mySignatureBase);
+      for (const marker of mySignatureMarkers) {
+        const page = pages[marker.pageIndex];
+        const { width, height } = page.getSize();
+        const imgWidth = marker.width;
+        const imgHeight = (image.height / image.width) * imgWidth;
+        
+        const sigX = marker.x * width;
+        const sigY = (1 - marker.y) * height;
+        const startX = sigX - (imgWidth / 2) + 10;
+        const endX = sigX + (imgWidth / 2) - 10;
+        const baselineY = sigY - (imgHeight / 2) + 2; 
 
-      page.drawText('X', { x: startX, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) }); // Professional dark blue
-      page.drawLine({
-          start: { x: startX + 10, y: baselineY },
-          end: { x: endX, y: baselineY },
-          thickness: 0.5, color: rgb(0.1, 0.1, 0.1) // crisp black line
-      });
-      page.drawText(`${myName || 'Signer'}`, { x: startX + 10, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
+        if (marker.showBaseline) {
+            page.drawText('X', { x: startX, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) });
+            page.drawLine({
+                start: { x: startX + 10, y: baselineY },
+                end: { x: endX, y: baselineY },
+                thickness: 0.5, color: rgb(0.1, 0.1, 0.1)
+            });
+            page.drawText(`${myName || 'Signer'}`, { x: startX + 10, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
+        }
 
-      page.drawImage(image, {
-        x: sigX - (imgWidth / 2),
-        y: sigY - (imgHeight / 2),
-        width: imgWidth, height: imgHeight,
-      });
+        page.drawImage(image, {
+          x: sigX - (imgWidth / 2),
+          y: sigY - (imgHeight / 2),
+          width: imgWidth, height: imgHeight,
+        });
+      }
     }
 
     // 2. Embed Recipient Fields & Filled Signatures
@@ -243,48 +275,56 @@ export default function App() {
         const { width, height } = page.getSize();
         const markerX = field.x * width;
         const markerY = (1 - field.y) * height;
+        const imgWidth = field.width || 140;
+        const showBaseline = field.showBaseline !== false;
+        const isBurned = field.isBurned;
 
         if (field.isSigned && field.filledDataUrl) {
-            page.drawRectangle({
-                x: markerX - 70, y: markerY - 25,
-                width: 140, height: 50,
-                color: rgb(1, 1, 1), opacity: 1
-            });
-            
-            const baselineY = markerY - 20; // Sit perfectly near the bottom of the 50px boundary
-            page.drawText('X', { x: markerX - 45, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) });
-            page.drawLine({
-                start: { x: markerX - 35, y: baselineY },
-                end: { x: markerX + 65, y: baselineY },
-                thickness: 0.5, color: rgb(0.1, 0.1, 0.1)
-            });
-            page.drawText(`${rec.name || 'Signer'}`, { x: markerX - 35, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
-
             const image = await pdfLibDoc.embedPng(field.filledDataUrl);
-            const imgWidth = 130; 
             const imgHeight = (image.height / image.width) * imgWidth;
+            
+            const startX = markerX - (imgWidth / 2) + 10;
+            const endX = markerX + (imgWidth / 2) - 10;
+            const baselineY = markerY - (imgHeight / 2) + 2;
+
+            if (showBaseline && !isBurned) {
+                page.drawText('X', { x: startX, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) });
+                page.drawLine({
+                    start: { x: startX + 10, y: baselineY },
+                    end: { x: endX, y: baselineY },
+                    thickness: 0.5, color: rgb(0.1, 0.1, 0.1)
+                });
+                page.drawText(`${rec.name || 'Signer'}`, { x: startX + 10, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
+            }
+
             page.drawImage(image, {
               x: markerX - (imgWidth / 2),
-              y: markerY - (imgHeight / 2) + 2, // Slightly levitate the ink so it sits nicely near the line
+              y: markerY - (imgHeight / 2),
               width: imgWidth, height: imgHeight,
             });
         } else {
+            const startX = markerX - (imgWidth / 2) + 10;
+            const endX = markerX + (imgWidth / 2) - 10;
             const baselineY = markerY - 20;
-            page.drawText('X', { x: markerX - 45, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) });
-            page.drawLine({
-                start: { x: markerX - 35, y: baselineY },
-                end: { x: markerX + 65, y: baselineY },
-                thickness: 0.5, color: rgb(0.1, 0.1, 0.1)
-            });
-            page.drawText(`${rec.name || 'Signer'}`, { x: markerX - 35, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
+
+            if (showBaseline && !isBurned) {
+                page.drawText('X', { x: startX, y: baselineY + 2, size: 8, font: helveticaFont, color: rgb(0.0, 0.3, 0.5) });
+                page.drawLine({
+                    start: { x: startX + 10, y: baselineY },
+                    end: { x: endX, y: baselineY },
+                    thickness: 0.5, color: rgb(0.1, 0.1, 0.1)
+                });
+                page.drawText(`${rec.name || 'Signer'}`, { x: startX + 10, y: baselineY - 8, size: 6, font: helveticaFont, color: rgb(0.3, 0.3, 0.3) });
+            }
         }
       }
     }
 
-    // Strip filledDataUrls out of Metadata for privacy/size before embedding
+    // Strip filledDataUrls out of Metadata for privacy/size before embedding.
+    // Also, once signed, the field is permanently flattened, so don't persist its metadata context further.
     const cleanRecipients = recipients.map(r => ({
-       ...r, fields: r.fields.map(f => ({ id: f.id, x: f.x, y: f.y, pageIndex: f.pageIndex, isSigned: f.isSigned }))
-    }));
+       ...r, fields: r.fields.filter(f => !f.isSigned).map(f => ({ id: f.id, x: f.x, y: f.y, pageIndex: f.pageIndex, width: f.width, showBaseline: f.showBaseline }))
+    })).filter(r => r.fields.length > 0);
     pdfLibDoc.setKeywords([`SIGNFLOW:${JSON.stringify(cleanRecipients)}`]);
     
     // Save PDF
@@ -323,13 +363,15 @@ export default function App() {
       <main className="max-w-[1700px] mx-auto px-8 py-10">
         <AnimatePresence mode="wait">
           {stage === 'upload' && (
-            <motion.div key="upload" className="max-w-3xl mx-auto mt-20 text-center">
-              <h2 className="text-6xl font-bold mb-8 font-outfit text-white tracking-tight leading-none">Your Private <br/><span className="text-brand">Signature Studio.</span></h2>
-              <div className="glass p-20 rounded-[4rem] border border-white/5 bg-slate-900/40 relative group shadow-3xl">
-                {isLoading && <div className="absolute inset-0 z-20 bg-slate-950/80 backdrop-blur flex flex-col items-center justify-center border border-white/5 rounded-[4rem]"><div className="w-16 h-16 border-4 border-brand border-t-transparent rounded-full animate-spin mb-6" /><p className="text-brand font-bold uppercase tracking-widest text-xs">Analyzing PDF...</p></div>}
+            <motion.div key="upload" className="max-w-3xl mx-auto mt-20 text-center relative z-10">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[120%] h-[150%] bg-brand/10 blur-[150px] -z-10 rounded-full pointer-events-none"></div>
+              <h2 className="text-6xl font-black mb-8 font-outfit text-transparent bg-clip-text bg-gradient-to-br from-white via-white to-slate-500 tracking-tight leading-none drop-shadow-xl">Your Private <br/><span className="text-brand drop-shadow-[0_0_30px_rgba(45,212,191,0.5)]">Signature Studio.</span></h2>
+              <div className="glass p-16 rounded-[3rem] bg-[#0c1322] relative group shadow-2xl">
+                {isLoading && <div className="absolute inset-0 z-20 bg-slate-950/80 backdrop-blur-md flex flex-col items-center justify-center rounded-[3rem]"><div className="w-16 h-16 border-4 border-brand border-t-transparent rounded-full animate-spin mb-6" /><p className="text-brand font-black uppercase tracking-widest text-[10px]">Analyzing PDF...</p></div>}
                 {error && <div className="mb-10 p-5 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-center gap-3 text-red-500 text-sm"><AlertCircle size={20} /> {error}</div>}
-                <div className="w-24 h-24 bg-slate-800 rounded-[2.5rem] flex items-center justify-center mx-auto mb-10 border border-white/10 group-hover:scale-110 transition-transform"><Upload className="text-brand" size={40} /></div>
-                <label className="btn-primary inline-flex items-center gap-4 cursor-pointer py-5 px-12 text-lg font-bold shadow-2xl shadow-brand/20 hover:scale-105 transition-transform"><Plus size={24} /> Choose Document<input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} /></label>
+                <div className="w-24 h-24 bg-brand/10 rounded-[2.5rem] flex items-center justify-center mx-auto mb-10 border border-brand/20 group-hover:scale-110 group-hover:bg-brand transition-all duration-300 shadow-[0_10px_40px_-5px_rgba(45,212,191,0.3)]"><Upload className="text-white drop-shadow-md" size={40} /></div>
+                <label className="btn-primary inline-flex items-center gap-4 cursor-pointer py-4 px-10 text-lg font-black tracking-wide shadow-2xl shadow-brand/20 hover:scale-105 transition-transform"><Plus size={24} strokeWidth={3} /> Choose Document<input type="file" accept=".pdf" className="hidden" onChange={handleFileUpload} /></label>
+                <div className="mt-8 text-sm font-medium text-slate-500">Only PDF files are supported</div>
               </div>
             </motion.div>
           )}
@@ -340,38 +382,39 @@ export default function App() {
                 
                 <section className="glass rounded-[2rem] bg-slate-900/40 border border-white/5 overflow-hidden shadow-xl">
                   <div className="px-8 py-5 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 bg-white/[0.01]">My Signature</div>
-                  <div className="p-8 space-y-6">
-                    <input type="text" placeholder="Your Name" value={myName} onChange={(e) => setMyName(e.target.value)} className="bg-slate-950/50 border border-white/5 rounded-2xl px-4 py-3 text-xs w-full text-white outline-none focus:border-brand" />
+                  <div className="p-8 space-y-6 relative">
+                    <input type="text" placeholder="Your Name" value={myName} onChange={(e) => setMyName(e.target.value)} className="modern-input w-full" />
                     
-                    {!mySignature ? (
-                      <button onClick={() => startDrawing()} className="w-full aspect-[4/3] border-2 border-dashed border-white/10 rounded-[2rem] flex flex-col items-center justify-center gap-3 hover:border-brand/40 text-slate-500 hover:text-brand hover:bg-brand/5 transition-all">
-                        <Plus size={24} /> Create Signature
+                    {!mySignatureBase ? (
+                      <button onClick={() => startDrawing('base')} className="w-full aspect-[4/3] border-[3px] border-dashed border-white/20 rounded-[2rem] flex flex-col items-center justify-center gap-3 hover:border-brand/60 text-slate-400 hover:text-brand hover:bg-brand/10 shadow-inner transition-all bg-black/20">
+                        <Plus size={28} strokeWidth={3} /> <span className="font-bold text-sm tracking-wide">Create Signature</span>
                       </button>
                     ) : (
                       <div className="space-y-4">
-                        <div onClick={() => setPlacementMode('mine')} className="bg-white p-4 rounded-[2rem] h-40 flex items-center justify-center relative shadow-inner border-2 border-transparent hover:border-brand/40 transition-all cursor-pointer">
-                          <img src={mySignature.dataUrl} className="max-h-full mix-blend-multiply" />
-                          <div className="absolute inset-0 bg-brand/5 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity uppercase text-[10px] font-black text-brand tracking-widest">Click to Relocate</div>
+                        <div className="bg-[#0b1221] p-4 rounded-[2rem] h-32 flex items-center justify-center relative shadow-inner border-2 border-white/5 overflow-hidden group">
+                           <img src={mySignatureBase} className="max-h-full invert drop-shadow-[0_4px_10px_rgba(255,255,255,0.2)] z-10 opacity-90" />
+                           <button onClick={() => { setMySignatureBase(null); setMySignatureMarkers([]); }} className="absolute top-3 right-3 w-8 h-8 rounded-full bg-red-500/20 text-red-500 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500 hover:text-white z-30 shadow-lg"><Trash2 size={14}/></button>
                         </div>
-                        <div className="space-y-2">
-                           <label className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Scaling</label>
-                           <input type="range" min="80" max="450" value={mySignature.width} onChange={(e) => setMySignature({...mySignature, width: parseInt(e.target.value)})} className="w-full accent-brand h-1 bg-white/5 rounded-lg appearance-none cursor-pointer" />
-                        </div>
-                        <div className="flex gap-3">
-                           <button onClick={() => setPlacementMode('mine')} className="flex-1 py-3 bg-brand/10 text-brand rounded-2xl text-[10px] font-black tracking-widest uppercase hover:bg-brand hover:text-white transition-colors border border-brand/20">Reposition</button>
-                           <button onClick={() => setMySignature(null)} className="px-5 bg-red-500/10 text-red-500 border border-red-500/10 rounded-2xl hover:bg-red-500 hover:text-white transition-all"><Trash2 size={16}/></button>
+                        
+                        <div className="p-5 bg-white/[0.02] border border-white/5 rounded-[1.5rem]">
+                           <div className="flex flex-wrap gap-2">
+                             {mySignatureMarkers.map((m, idx) => (
+                                <button key={m.id} onClick={() => setSelectedId(m.id)} className={cn("text-[9px] px-3.5 py-2 rounded-xl border font-black uppercase tracking-widest transition-all", selectedId === m.id ? "bg-brand border-brand text-white shadow-lg shadow-brand/40 scale-105" : "text-slate-400 border-white/10 hover:bg-white/10 hover:text-white bg-white/5")}>Sign {idx+1}</button>
+                             ))}
+                             <button onClick={() => { setPlacementMode('mine_marker'); setSelectedId(null); }} className="text-[10px] font-black border border-dashed border-white/20 px-4 py-2 rounded-xl text-brand hover:bg-brand/10 hover:border-brand/50 transition-all">+ Add Signature Instance</button>
+                           </div>
                         </div>
                       </div>
                     )}
                   </div>
                 </section>
 
-                <section className="glass rounded-[2rem] bg-slate-900/40 border border-white/5 overflow-hidden">
+                <section className="glass rounded-[2rem] overflow-hidden shadow-xl">
                    <div className="px-8 py-5 border-b border-white/5 text-[10px] font-black uppercase text-slate-500 bg-white/[0.01]">Recipient Workflow</div>
-                   <div className="p-8 space-y-5">
+                   <div className="p-8 space-y-6">
                       {recipients.map(rec => (
-                        <div key={rec.id} className="p-6 bg-white/[0.02] border border-white/5 rounded-3xl">
-                           <input type="text" placeholder="Signer Name" value={rec.name} onChange={(e) => setRecipients(recipients.map(r => r.id === rec.id ? { ...r, name: e.target.value } : r))} className="bg-slate-950/50 border border-white/5 rounded-2xl px-4 py-3 text-xs w-full text-white outline-none mb-4 focus:border-brand" />
+                        <div key={rec.id} className="p-6 bg-[#080d1a]/50 border border-white/10 rounded-[1.5rem] shadow-inner relative group">
+                           <input type="text" placeholder="Signer Name" value={rec.name} onChange={(e) => setRecipients(recipients.map(r => r.id === rec.id ? { ...r, name: e.target.value } : r))} className="modern-input w-full mb-5" />
                            <div className="flex flex-wrap gap-2">
                              {rec.fields.map((f, idx) => <button key={f.id} onClick={() => setSelectedId(f.id)} className={cn("text-[9px] px-3 py-1.5 rounded-xl border font-black uppercase tracking-widest transition-all", selectedId === f.id ? "bg-brand border-brand text-white" : "text-slate-600 border-white/5", f.isSigned && "opacity-50 line-through")}>Mark {idx+1}</button>)}
                              <button onClick={() => { setActiveRecipientId(rec.id); setSelectedId(null); setPlacementMode('other'); }} className="text-[10px] font-black border border-dashed border-white/10 px-4 py-2 rounded-xl text-slate-500 hover:text-brand hover:border-brand transition-all">+ Marker</button>
@@ -385,31 +428,64 @@ export default function App() {
                 <button onClick={generateFinalPdf} className="btn-primary w-full py-5 text-sm font-black uppercase tracking-widest shadow-2xl">Finalize PDF</button>
               </aside>
 
-              <div className="lg:col-span-9 bg-slate-950/20 rounded-[3rem] border border-white/5 p-12 h-[calc(100vh-12rem)] overflow-y-auto custom-scrollbar relative shadow-inner">
+                  <div className="lg:col-span-9 bg-slate-950/20 rounded-[3rem] border border-white/5 p-12 h-[calc(100vh-12rem)] overflow-y-auto custom-scrollbar relative shadow-inner">
                  <div className="flex flex-col items-center gap-16 relative">
                     {Array.from({ length: numPages }).map((_, i) => (
-                      <div key={i} className="pdf-page-container relative group/page transition-all duration-700" onClick={(e) => handlePageClick(i, e)} style={{ cursor: placementMode ? 'crosshair' : 'default' }}>
+                      <div key={i} className="pdf-page-container relative w-fit mx-auto group/page transition-all duration-700" onClick={(e) => handlePageClick(i, e)} style={{ cursor: placementMode ? 'crosshair' : 'default' }}>
                          <div className={cn("transition-all duration-700", placementMode ? "blur-[2px] opacity-80 hover:blur-0 hover:opacity-100" : "")}>
                            <PdfPage pdfDoc={pdfDoc} pageNumber={i + 1} />
                          </div>
                          
-                         {/* My Signature */}
-                         {mySignature?.pageIndex === i && (
-                             <div 
-                               onClick={(e) => { e.stopPropagation(); setPlacementMode('mine'); }}
-                               className={cn(
-                                 "absolute border-2 transition-all flex items-center justify-center cursor-pointer group/sig z-30",
-                                 placementMode === 'mine' ? "border-brand ring-[12px] ring-brand/5 scale-110 bg-white/10 blur-[1px]" : "border-transparent hover:border-brand/40"
-                               )}
-                               style={{ left: `${mySignature.x * 100}%`, top: `${mySignature.y * 100}%`, width: `${mySignature.width}px`, transform: 'translate(-50%, -50%)' }}
-                              >
-                               <img src={mySignature.dataUrl} className="w-full h-auto mix-blend-multiply" alt="signed" />
-                               <button onClick={(e) => { e.stopPropagation(); setMySignature(null); }} className="absolute -top-4 -right-4 w-9 h-9 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg opacity-0 group-hover/sig:opacity-100 transition-opacity"><Trash2 size={16}/></button>
-                             </div>
-                         )}
+                         {/* My Signature Markers */}
+                         {mySignatureBase && mySignatureMarkers.filter(m => m.pageIndex === i).map(m => (
+                              <div 
+                                key={m.id}
+                                onClick={(e) => { e.stopPropagation(); setSelectedId(m.id); }}
+                                className={cn(
+                                  "absolute transition-all flex flex-col items-center justify-center cursor-pointer pointer-events-auto group/sig z-30",
+                                  selectedId === m.id ? "ring-2 ring-brand shadow-xl scale-105 bg-brand/5 rounded-lg" : ""
+                                )}
+                                style={{ left: `${m.x * 100}%`, top: `${m.y * 100}%`, width: `${m.width}px`, transform: 'translate(-50%, -50%)' }}
+                               >
+                                <div className="absolute inset-0 border-2 border-transparent group-hover/sig:border-brand/40 transition-all pointer-events-none rounded" />
+                                <div className="relative w-full">
+                                  <img src={mySignatureBase} className="w-full h-auto mix-blend-multiply drop-shadow-sm pb-4" alt="signed" />
+                                  {/* Visual Preview of the Line */}
+                                  {m.showBaseline && (
+                                    <div className="absolute bottom-1 left-2 right-2 pointer-events-none flex flex-col opacity-80">
+                                        <div className="flex items-end">
+                                            <span className="text-[12px] font-bold text-[#004e80] mr-1 leading-none font-helvetica pb-[1px]">X</span>
+                                            <div className="flex-1 border-b border-slate-900"></div>
+                                        </div>
+                                        <span className="text-[8px] font-semibold text-slate-700 self-start ml-4 leading-none mt-0.5">{myName || 'Signer'}</span>
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {selectedId === m.id && (
+                                    <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl p-1.5 flex items-center gap-1 z-50">
+                                        <button onClick={(e) => { e.stopPropagation(); setMySignatureMarkers(mySignatureMarkers.map(mark => mark.id === m.id ? {...mark, width: mark.width + 15} : mark)); }} className="px-4 py-2 text-[14px] font-black text-brand hover:bg-brand/10 rounded-xl">+</button>
+                                        <button onClick={(e) => { e.stopPropagation(); setMySignatureMarkers(mySignatureMarkers.map(mark => mark.id === m.id ? {...mark, width: Math.max(50, mark.width - 15)} : mark)); }} className="px-4 py-2 text-[14px] font-black text-brand hover:bg-brand/10 rounded-xl">-</button>
+                                        
+                                        <div className="w-[1px] h-5 bg-white/20 mx-1"></div>
+                                        
+                                        <button onClick={(e) => { e.stopPropagation(); setMySignatureMarkers(mySignatureMarkers.map(mark => mark.id === m.id ? {...mark, showBaseline: !mark.showBaseline} : mark)); }} className="px-4 py-2 text-[10px] font-black uppercase text-cyan-400 hover:bg-cyan-400/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Line: {m.showBaseline ? 'ON' : 'OFF'}</button>
+                                        
+                                        <div className="w-[1px] h-5 bg-white/20 mx-1"></div>
+
+                                        <button onClick={(e) => { e.stopPropagation(); setPlacementMode('relocate_mine'); }} className="px-4 py-2 text-[10px] font-black uppercase text-white hover:bg-white/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Move</button>
+                                        <button onClick={(e) => { e.stopPropagation(); setMySignatureMarkers(mySignatureMarkers.filter(mark => mark.id !== m.id)); setSelectedId(null); }} className="px-4 py-2 text-[10px] font-black uppercase text-red-500 hover:bg-red-500/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Clear</button>
+                                    </div>
+                                )}
+                              </div>
+                         ))}
 
                          {/* Markers (X _______) */}
-                         {recipients.flatMap(r => r.fields.map(f => ({ ...f, name: r.name, recipientId: r.id }))).filter(f => f.pageIndex === i).map(f => (
+                         {recipients.flatMap(r => r.fields.map(f => ({ ...f, name: r.name, recipientId: r.id }))).filter(f => f.pageIndex === i).map(f => {
+                            const fw = f.width || 140;
+                            const showB = f.showBaseline !== false;
+                            
+                            return (
                             <div 
                                 key={f.id} 
                                 onClick={(e) => { e.stopPropagation(); setSelectedId(f.id); }}
@@ -418,38 +494,71 @@ export default function App() {
                                     selectedId === f.id ? "border-brand shadow-xl z-40 bg-brand/5" : "border-cyan-400/20 z-10",
                                     "cursor-pointer"
                                 )} 
-                                style={{ left: `${f.x * 100}%`, top: `${f.y * 100}%`, width: '130px', height: '50px', transform: 'translate(-50%, -50%)' }}
+                                style={{ left: `${f.x * 100}%`, top: `${f.y * 100}%`, width: `${fw}px`, minHeight: '50px', transform: 'translate(-50%, -50%)' }}
                             >
                                {selectedId === f.id && (
-                                   <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-slate-900 border border-white/10 rounded-xl shadow-2xl p-1 flex gap-1 z-50">
+                                   <div className="absolute -top-16 left-1/2 -translate-x-1/2 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl p-1.5 flex items-center gap-1 z-50">
                                        {!f.isSigned && (
-                                          <button onClick={(e) => { e.stopPropagation(); startDrawing(f.id); }} className="px-3 py-1.5 text-[8px] font-black uppercase text-brand hover:bg-brand/10 rounded-lg whitespace-nowrap">Sign Field</button>
+                                          <button onClick={(e) => { e.stopPropagation(); startDrawing(f.id); }} className="px-4 py-2 text-[10px] font-black uppercase text-brand hover:bg-brand/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Sign</button>
                                        )}
-                                       {f.isSigned && (
-                                          <button onClick={(e) => {
-                                              e.stopPropagation();
-                                              setRecipients(recipients.map(r => ({...r, fields: r.fields.map(fld => fld.id === f.id ? {...fld, isSigned: false, filledDataUrl: undefined } : fld)})))
-                                          }} className="px-3 py-1.5 text-[8px] font-black uppercase text-orange-400 hover:bg-orange-400/10 rounded-lg whitespace-nowrap">Clear Sig</button>
-                                       )}
+                                       
+                                       <button onClick={(e) => { e.stopPropagation(); setRecipients(recipients.map(r => r.id === f.recipientId ? {...r, fields: r.fields.map(fld => fld.id === f.id ? {...fld, width: (fld.width || 140) + 15} : fld)} : r)); }} className="px-4 py-2 text-[14px] font-black text-brand hover:bg-brand/10 rounded-xl">+</button>
+                                       <button onClick={(e) => { e.stopPropagation(); setRecipients(recipients.map(r => r.id === f.recipientId ? {...r, fields: r.fields.map(fld => fld.id === f.id ? {...fld, width: Math.max(80, (fld.width || 140) - 15)} : fld)} : r)); }} className="px-4 py-2 text-[14px] font-black text-brand hover:bg-brand/10 rounded-xl">-</button>
+                                       
+                                       <div className="w-[1px] h-5 bg-white/20 mx-1"></div>
+                                       
+                                       <button onClick={(e) => { e.stopPropagation(); setRecipients(recipients.map(r => r.id === f.recipientId ? {...r, fields: r.fields.map(fld => fld.id === f.id ? {...fld, showBaseline: !showB} : fld)} : r)); }} className="px-4 py-2 text-[10px] font-black uppercase text-cyan-400 hover:bg-cyan-400/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Line: {showB ? 'ON' : 'OFF'}</button>
+                                       
+                                       <div className="w-[1px] h-5 bg-white/20 mx-1"></div>
+                                       
                                        <button onClick={(e) => { 
                                           e.stopPropagation(); 
                                           setActiveRecipientId(f.recipientId); 
                                           setPlacementMode('other'); 
-                                       }} className="px-3 py-1.5 text-[8px] font-black uppercase text-white hover:bg-white/10 rounded-lg whitespace-nowrap">Move</button>
+                                       }} className="px-4 py-2 text-[10px] font-black uppercase text-white hover:bg-white/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Move</button>
+
+                                       {f.isSigned ? (
+                                           <button onClick={(e) => {
+                                               e.stopPropagation();
+                                               setRecipients(recipients.map(r => ({...r, fields: r.fields.map(fld => fld.id === f.id ? {...fld, isSigned: false, filledDataUrl: undefined } : fld)})))
+                                           }} className="px-4 py-2 text-[10px] font-black uppercase text-red-500 hover:bg-red-500/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Clear</button>
+                                       ) : (
+                                           <button onClick={(e) => { e.stopPropagation(); removeField(f.id); }} className="px-4 py-2 text-[10px] font-black uppercase text-red-500 hover:bg-red-500/10 rounded-xl whitespace-nowrap hover:scale-105 transition-transform">Delete</button>
+                                       )}
                                    </div>
                                )}
                                
-                               {f.isSigned && f.filledDataUrl ? (
-                                   <img src={f.filledDataUrl} className="w-[130px] h-auto mix-blend-multiply" alt="filled signature" />
-                               ) : (
-                                   <div className="pointer-events-none w-full h-full bg-cyan-500/10 border border-cyan-500/40 rounded flex flex-col items-center justify-center backdrop-blur-[2px]">
-                                      <div className="text-[11px] text-cyan-600 uppercase font-black tracking-widest leading-none mb-1">Sign Here</div>
-                                      <div className="text-[7px] text-cyan-600/70 font-bold uppercase truncate max-w-[90%]">{f.name || 'Recipient'}</div>
-                                   </div>
-                               )}
-                               <button onClick={(e) => { e.stopPropagation(); removeField(f.id); }} className="absolute -bottom-4 right-0 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center shadow-lg opacity-0 group-hover/field:opacity-100 transition-opacity"><Trash2 size={12}/></button>
+                                    {f.isSigned && f.filledDataUrl ? (
+                                        <div className="relative w-full">
+                                           <img src={f.filledDataUrl} className="w-full h-auto mix-blend-multiply drop-shadow-sm pb-4 relative z-10" alt="filled signature" />
+                                           {showB && !f.isBurned && (
+                                             <div className="absolute bottom-1 left-2 right-2 pointer-events-none flex flex-col opacity-80 z-0">
+                                                 <div className="flex items-end">
+                                                     <span className="text-[12px] font-bold text-[#004e80] mr-1 leading-none font-helvetica pb-[1px]">X</span>
+                                                     <div className="flex-1 border-b border-slate-900"></div>
+                                                 </div>
+                                                 <span className="text-[8px] font-semibold text-slate-700 self-start ml-4 leading-none mt-0.5">{f.name || 'Signer'}</span>
+                                             </div>
+                                           )}
+                                        </div>
+                                    ) : (
+                                        <div className="relative w-full h-[50px]">
+                                           <div className={cn("absolute inset-0 pointer-events-none rounded flex flex-col items-center justify-start pt-2 backdrop-blur-[1px]", f.isBurned ? "bg-cyan-500/0 transparent" : "bg-cyan-500/5 text-cyan-700/80")}>
+                                              {!f.isBurned && <div className="text-[12px] font-black tracking-widest leading-none mb-1">SIGN HERE</div>}
+                                           </div>
+                                           {showB && !f.isBurned && (
+                                             <div className="absolute bottom-2 left-2 right-2 pointer-events-none flex flex-col opacity-80 z-0">
+                                                 <div className="flex items-end">
+                                                     <span className="text-[12px] font-bold text-[#004e80] mr-1 leading-none font-helvetica pb-[1px]">X</span>
+                                                     <div className="flex-1 border-b border-slate-900"></div>
+                                                 </div>
+                                                 <span className="text-[8px] font-semibold text-slate-700 self-start ml-4 leading-none mt-0.5">{f.name || 'Signer'}</span>
+                                             </div>
+                                           )}
+                                        </div>
+                                    )}
                             </div>
-                         ))}
+                         )})}
                          
                          {placementMode && <div className="absolute inset-0 bg-brand/5 pointer-events-none flex items-center justify-center"><div className="bg-slate-900 border border-brand/50 shadow-2xl shadow-brand/20 px-8 py-3 rounded-full text-[10px] font-black uppercase text-brand animate-pulse">Click Document to place</div></div>}
                       </div>
@@ -460,10 +569,12 @@ export default function App() {
           )}
 
           {stage === 'finalize' && (
-            <motion.div key="finalize" className="max-w-4xl mx-auto mt-20 text-center">
-                <div className="w-24 h-24 bg-emerald-500/10 rounded-[2.5rem] flex items-center justify-center mx-auto mb-10 text-emerald-500 shadow-3xl"><CheckCircle2 size={56} /></div>
-                <h2 className="text-5xl font-bold mb-6 text-white font-outfit">Ready to share!</h2>
-                <button onClick={() => setStage('upload')} className="btn-secondary px-8 py-4 text-xs font-bold uppercase tracking-widest bg-white/5 hover:bg-white/10 rounded-2xl transition-colors">Start New Document</button>
+            <motion.div key="finalize" className="max-w-4xl mx-auto mt-20 text-center relative z-10">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[120%] h-[150%] bg-emerald-500/10 blur-[150px] -z-10 rounded-full pointer-events-none"></div>
+                <div className="w-24 h-24 bg-emerald-500/20 border border-emerald-500/30 rounded-[2.5rem] flex items-center justify-center mx-auto mb-10 text-emerald-400 shadow-[0_10px_60px_-10px_rgba(16,185,129,0.5)] animate-bounce"><CheckCircle2 size={56} /></div>
+                <h2 className="text-6xl font-black mb-10 text-transparent bg-clip-text bg-gradient-to-tr from-white to-slate-400 font-outfit tracking-tight drop-shadow-lg">Secured & Downloaded.</h2>
+                <p className="text-slate-400 font-medium max-w-sm mx-auto mb-12">Your client-side document has been perfectly assembled without ever touching a server.</p>
+                <button onClick={() => setStage('upload')} className="glass-button px-10 py-5 text-xs font-black uppercase tracking-widest text-emerald-400 hover:text-emerald-300 hover:border-emerald-500/40 shadow-xl inline-flex items-center gap-3"><Plus size={16}/> Start New Document</button>
             </motion.div>
           )}
         </AnimatePresence>
@@ -473,7 +584,7 @@ export default function App() {
       {isDrawing && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-8 bg-slate-950/90 backdrop-blur-[60px]">
            <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }} className="glass p-16 rounded-[4rem] w-full max-w-3xl bg-slate-900 border border-white/10 shadow-3xl">
-              <div className="flex justify-between items-center mb-10"><div><h3 className="text-3xl font-bold text-white font-outfit">Signature</h3><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mt-2">{selectedId === 'me' ? 'Drawing your primary signature' : 'Filling recipient marker'}</p></div><button onClick={() => setIsDrawing(false)} className="text-slate-500 hover:text-white transition-all"><X size={36}/></button></div>
+              <div className="flex justify-between items-center mb-10"><div><h3 className="text-3xl font-bold text-white font-outfit">Signature</h3><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mt-2">{selectedId === 'base' ? 'Drawing your primary signature' : 'Filling recipient marker'}</p></div><button onClick={() => setIsDrawing(false)} className="text-slate-500 hover:text-white transition-all"><X size={36}/></button></div>
               <div className="bg-white rounded-[3.5rem] p-8 mb-10 shadow-3xl relative border-[8px] border-slate-950 group">
                  <div className="absolute inset-0 border-2 border-slate-200 border-dashed rounded-[2.8rem] m-2 pointer-events-none opacity-50" />
                  <canvas ref={sigCanvasRef} className="signature-canvas w-full h-80 touch-none cursor-crosshair relative z-10" />
